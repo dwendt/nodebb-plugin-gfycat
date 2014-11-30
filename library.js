@@ -12,10 +12,11 @@
     var getgfycat = function(gfycatKey, callback) {
         var gfycatNum = gfycatKey.split('.com/')[1];
         request.get({
-            url: '//gfycat.com/cajax/get/' + gfycatNum + ''
+            url: 'http://gfycat.com/cajax/get/' + gfycatNum + ''
         }, function (err, response, body) {
             if (!err && response.statusCode === 200) {
                 var gfycatData = JSON.parse(body).gfyItem;
+
                 if (!gfycatData) {
                     return callback(null, {});
                 }
@@ -26,33 +27,56 @@
                     gifUrl: gfycatData.gifUrl,
                     mp4Url: gfycatData.mp4Url,
                     gfyId: gfycatData.gfyId,
+                    name: gfycatData.name,
                     numFrames: gfycatData.numFrames
                 });
             } else {
+                winston.warn("Gfycat API failure:", err, response, body);
                 callback(err);
             }
         });
     };
-    Embed.init = function(app, middleware, controllers, callback) {
+
+    Embed.init = function(data, callback) { 
         function render(req, res, next) {
             res.render('partials/gfycat-block', {});
         }
-        appModule = app;
+        appModule = data.app;
+
         if ( callback )
         callback();
     };
+
+    Embed.parsePost = function(data, callback) {
+        if (data && data.postData && data.postData.content) {
+            Embed.parse(data.postData.content, function(err, raw) {
+                if (err) return callback(err, data);
+
+                data.postData.content = raw;
+                callback(null, data);
+            });
+        } else {
+            callback(null, data);
+        }
+    };
+
     Embed.parse = function(raw, callback) {
-        var gfycatKeys = [],
+        var gfycatKeys = [], matchReplace = [],
             matches, cleanedText;
+
         cleanedText = S(raw).stripTags().s;
         matches = cleanedText.match(gfycatRegex);
+
         if (matches && matches.length) {
             matches.forEach(function(match) {
-                if (gfycatKeys.indexOf(match) === -1) {
+                if (match === null || match === "null" || gfycatKeys.indexOf(match) === -1 || match.length < 1) {
                     gfycatKeys.push(match);
                 }
             });
+        } else {
+            return callback(null, raw);
         }
+
         async.map(gfycatKeys, function(gfycatKey, next) {
             if (cache.has(gfycatKey)) {
                 next(null, cache.get(gfycatKey));
@@ -61,26 +85,31 @@
                     if (err) {
                         return next(err);
                     }
+                    gfycatObj.name = gfycatKey;
+
                     cache.set(gfycatKey, gfycatObj);
                     next(err, gfycatObj);
                 });
             }
         }, function(err, gfycatinfo) {
             if (!err) {
-// Filter
-                gfycatinfo = gfycatinfo.filter(function(issue) {
-                    return issue;
-                });
                 appModule.render('partials/gfycat-block', {
                     gfycatinfo: gfycatinfo
                 }, function(err, html) {
-                    callback(null, raw += html);
+                    gfycatinfo = gfycatinfo[0];
+                    matchReplace.push({"name": gfycatinfo.name, "html": html});
                 });
             } else {
                 winston.warn('Encountered an error parsing gfycat embed code, not continuing', raw);
-                callback(null, raw);
+                return callback(null, raw);
             }
         });
+
+        matchReplace.forEach(function(match) {
+          raw = raw.split(match.name).join(match.html);
+        });
+
+        callback(null, raw);
     };
 // Initial setup
     cache = require('lru-cache')({
